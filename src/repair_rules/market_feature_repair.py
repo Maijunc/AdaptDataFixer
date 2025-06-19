@@ -54,8 +54,8 @@ class MarketFeatureRepairRule(BaseRepairRule):
                 # 找出涨跌幅与涨幅%不匹配的行（考虑浮点数精度误差）
                 mask3 = ~np.isclose(group['涨跌幅'], group['涨幅%'], atol=1e-6)
                 # 覆盖涨幅%和涨跌幅
-                group.loc[mask3, '涨幅%'] = calculated_pct[mask3]
-                group.loc[mask3, '涨跌幅'] = calculated_pct[mask3]
+                group.loc[mask3, '涨幅%'] = (calculated_pct[mask3]).__round__(2)
+                group.loc[mask3, '涨跌幅'] = (calculated_pct[mask3]).__round__(2)
                 repair_count += mask3.sum()
 
         # 1. 涨跌幅相关指标修复
@@ -74,21 +74,30 @@ class MarketFeatureRepairRule(BaseRepairRule):
 
             for col, period in period_cols.items():
                 if col in group.columns:
-                    # 只修复值为0的部分
                     mask = (group[col] == 0)
                     if mask.any():
-                        # 使用min_periods=1确保即使数据不足也能计算
-                        rolling_sum = group[change_col].rolling(window=period, min_periods=1).sum()
-                        group.loc[mask, col] = rolling_sum.loc[mask]
-                        # 处理可能的NaN值
+                        # 计算前一日的X日涨幅%
+                        prev_day_col = group[col].shift(1)
+                        # 计算前第X日的单日涨跌幅（修正此处，原为group[col].shift(period)）
+                        prev_period_change = group[change_col].shift(period)
+                        # 计算本日的涨跌幅
+                        current_change = group[change_col]
+
+                        # 修正公式：今日X日涨幅 = 昨日X日涨幅 - X天前单日涨跌幅 + 今日单日涨跌幅
+                        calculated_col = prev_day_col - prev_period_change + current_change
+
+                        # 覆盖原值为0的位置
+                        group.loc[mask, col] = (calculated_col.loc[mask]).__round__(2)
                         group[col] = group[col].fillna(0)
                         repair_count += mask.sum()
+                        logger.info(f"修复了 {mask.sum()} 处 {col} 的值")
 
         # 2. 年初至今%和一年涨幅%的修复
         logger.info("正在修复年初至今%和一年涨幅%...")
         # 检查涨跌幅列是否存在
         change_col = '涨跌幅' if '涨跌幅' in group.columns else None
 
+        # 1. 修复年初至今%
         if '年初至今%' in group.columns and '日期' in group.columns and change_col:
             try:
                 # 按年分组计算累计涨跌幅
@@ -98,9 +107,17 @@ class MarketFeatureRepairRule(BaseRepairRule):
 
                     mask = (group['year'] == year) & (group['年初至今%'] == 0)
                     if mask.any():
-                        group.loc[mask, '年初至今%'] = group.loc[mask, change_col].cumsum()
-                        repair_count += mask.sum()
+                        # 计算上一个交易日的年初至今%
+                        prev_day_col = year_data['年初至今%'].shift(1)
+                        # 计算本日的涨跌幅
+                        current_change = year_data[change_col]
 
+                        # 根据公式计算新的年初至今%
+                        calculated_col = prev_day_col + current_change
+
+                        # 覆盖原值为0的位置
+                        group.loc[mask, '年初至今%'] = (calculated_col.loc[mask]).__round__(2)
+                        repair_count += mask.sum()
                 group.drop('year', axis=1, inplace=True)
             except Exception as e:
                 logger.warning(f"年初至今%修复失败: {str(e)}")
@@ -110,15 +127,26 @@ class MarketFeatureRepairRule(BaseRepairRule):
         low_col = '52周最低' if '52周最低' in group.columns else None
         year_change_col = '一年涨幅%' if '一年涨幅%' in group.columns else None
 
+        # 2. 修复一年涨幅%
         if high_col and low_col and year_change_col:
             mask = (group[year_change_col] == 0) & (group[high_col] > 0) & (group[low_col] > 0)
-            group.loc[mask, year_change_col] = (group.loc[mask, high_col] - group.loc[mask, low_col]) / \
-                                             group.loc[mask, low_col] * 100
-            repair_count += mask.sum()
+            if mask.any():
+                # 计算上一个交易日的一年涨幅%
+                prev_day_col = group[year_change_col].shift(1)
+                # 计算本日的涨跌幅
+                current_change = group[change_col]
+
+                # 根据公式计算新的一年涨幅%
+                calculated_col = prev_day_col + current_change
+
+                # 覆盖原值为0的位置
+                group.loc[mask, year_change_col] = (calculated_col.loc[mask]).__round__(2)
+                repair_count += mask.sum()
 
         # 3. 强弱度%的修复
         logger.info("正在修复强弱度%...")
         strength_col = '强弱度%' if '强弱度%' in group.columns else None
+        change_col = '涨跌幅' if '涨跌幅' in group.columns else None
 
         if strength_col and change_col:
             # 按照公式：(100+上一个交易的强弱度%)/(100+上一个交易的涨跌幅)=(100+强弱度%)/(100+涨跌幅)
@@ -129,11 +157,15 @@ class MarketFeatureRepairRule(BaseRepairRule):
             mask = (group[strength_col] == 0)
             if mask.any():
                 try:
-                    group.loc[mask, strength_col] = ((100 + prev_strength) * (100 + current_change) / \
-                                                  (100 + prev_change) - 100).fillna(0)
+                    # 计算新的强弱度%
+                    calculated_strength = ((100 + prev_strength) / (100 + prev_change)) * (100 + current_change) - 100
+                    group.loc[mask, strength_col] = (calculated_strength[mask]).__round__(2)
                     repair_count += mask.sum()
+                    logger.info(f"修复了 {mask.sum()} 处 {strength_col} 的值")
                 except Exception as e:
-                    logger.warning(f"强弱度%修复失败: {str(e)}")
+                    logger.warning(f"强弱度%修复失败: {str(e)}", exc_info=True)
+
+
 
         # 4. 开盘%、最高%、最低%、均涨幅%的修复
         logger.info("正在修复开盘%、最高%、最低%、均涨幅%...")
@@ -149,8 +181,8 @@ class MarketFeatureRepairRule(BaseRepairRule):
             if open_pct_col and open_col:
                 mask = (group[open_pct_col] == 0) & (group[prev_close_col] > 0)
                 if mask.any():
-                    group.loc[mask, open_pct_col] = (group.loc[mask, open_col] - group.loc[mask, prev_close_col]) / \
-                                                  group.loc[mask, prev_close_col] * 100
+                    group.loc[mask, open_pct_col] = ((group.loc[mask, open_col] - group.loc[mask, prev_close_col]) / \
+                                                  group.loc[mask, prev_close_col] * 100).__round__(2)
                     repair_count += mask.sum()
 
             # 最高%修复
@@ -160,8 +192,8 @@ class MarketFeatureRepairRule(BaseRepairRule):
             if high_pct_col and high_col:
                 mask = (group[high_pct_col] == 0) & (group[prev_close_col] > 0)
                 if mask.any():
-                    group.loc[mask, high_pct_col] = (group.loc[mask, high_col] - group.loc[mask, prev_close_col]) / \
-                                                  group.loc[mask, prev_close_col] * 100
+                    group.loc[mask, high_pct_col] = ((group.loc[mask, high_col] - group.loc[mask, prev_close_col]) / \
+                                                  group.loc[mask, prev_close_col] * 100).__round__(2)
                     repair_count += mask.sum()
 
             # 最低%修复
@@ -171,8 +203,8 @@ class MarketFeatureRepairRule(BaseRepairRule):
             if low_pct_col and low_col:
                 mask = (group[low_pct_col] == 0) & (group[prev_close_col] > 0)
                 if mask.any():
-                    group.loc[mask, low_pct_col] = (group.loc[mask, low_col] - group.loc[mask, prev_close_col]) / \
-                                                 group.loc[mask, prev_close_col] * 100
+                    group.loc[mask, low_pct_col] = ((group.loc[mask, low_col] - group.loc[mask, prev_close_col]) / \
+                                                 group.loc[mask, prev_close_col] * 100).__round__(2)
                     repair_count += mask.sum()
 
             # 均涨幅%修复
@@ -185,8 +217,8 @@ class MarketFeatureRepairRule(BaseRepairRule):
             if avg_pct_col and avg_col:
                 mask = (group[avg_pct_col] == 0) & (group[prev_close_col] > 0)
                 if mask.any():
-                    group.loc[mask, avg_pct_col] = (group.loc[mask, avg_col] - group.loc[mask, prev_close_col]) / \
-                                                 group.loc[mask, prev_close_col] * 100
+                    group.loc[mask, avg_pct_col] = ((group.loc[mask, avg_col] - group.loc[mask, prev_close_col]) / \
+                                                 group.loc[mask, prev_close_col] * 100).__round__(2)
                     repair_count += mask.sum()
 
         # 5. 回头波%、攻击波%的修复
@@ -203,7 +235,8 @@ class MarketFeatureRepairRule(BaseRepairRule):
                 if net_ratio_col:
                     mask = (group[wave_col] == 0) & (group[change_col] != 0) & (group[net_ratio_col] != 0)
                     if mask.any():
-                        group.loc[mask, wave_col] = group.loc[mask, change_col] * group.loc[mask, net_ratio_col] / 100
+                        group.loc[mask, wave_col] = (group.loc[mask, change_col] * group.loc[mask, net_ratio_col] / 100
+                                                     ).__round__(2)
                         repair_count += mask.sum()
 
                 # 对于仍然为0的值，使用前后均值修复
@@ -211,7 +244,7 @@ class MarketFeatureRepairRule(BaseRepairRule):
                 if mask.any():
                     prev_val = group[wave_col].shift(1).fillna(0)
                     next_val = group[wave_col].shift(-1).fillna(0)
-                    group.loc[mask, wave_col] = prev_val[mask] * 0.6 + next_val[mask] * 0.4
+                    group.loc[mask, wave_col] = (prev_val[mask] * 0.6 + next_val[mask] * 0.4).__round__(2)
                     repair_count += mask.sum()
 
         # 6. 距5日线%的修复
@@ -228,7 +261,8 @@ class MarketFeatureRepairRule(BaseRepairRule):
                 ma5 = group[price_col].rolling(window=5, min_periods=1).mean()
                 mask = (group[ma_dist_col] == 0) & (ma5 > 0)
                 if mask.any():
-                    group.loc[mask, ma_dist_col] = (group.loc[mask, price_col] - ma5[mask]) / ma5[mask] * 100
+                    group.loc[mask, ma_dist_col] = ((group.loc[mask, price_col] - ma5[mask]) / ma5[mask] * 100)\
+                        .__round__(2)
                     repair_count += mask.sum()
             except Exception as e:
                 logger.warning(f"距5日线%修复失败: {str(e)}")

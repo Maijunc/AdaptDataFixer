@@ -77,7 +77,7 @@ class PriceRepairRule(BaseRepairRule):
             mask = (group['均价'] == 0)
             if mask.any():
                 # 使用开盘价和收盘价的平均值作为均价
-                group.loc[mask, '均价'] = (group.loc[mask, '今开'] + group.loc[mask, '现价']) / 2
+                group.loc[mask, '均价'] = ((group.loc[mask, '今开'] + group.loc[mask, '现价']) / 2).__round__(2)
                 repair_count += mask.sum()
 
         # 3. 昨收价修复
@@ -128,13 +128,13 @@ class PriceRepairRule(BaseRepairRule):
             # 修复涨停价
             mask_up = (group['涨停价'] == 0)
             if mask_up.any():
-                group.loc[mask_up, '涨停价'] = group.loc[mask_up, '昨收'] * (1 + limit_rate)
+                group.loc[mask_up, '涨停价'] = (group.loc[mask_up, '昨收'] * (1 + limit_rate)).__round__(2)
                 repair_count += mask_up.sum()
 
             # 修复跌停价
             mask_down = (group['跌停价'] == 0)
             if mask_down.any():
-                group.loc[mask_down, '跌停价'] = group.loc[mask_down, '昨收'] * (1 - limit_rate)
+                group.loc[mask_down, '跌停价'] = (group.loc[mask_down, '昨收'] * (1 - limit_rate)).__round__(2)
                 repair_count += mask_down.sum()
 
         logger.info(f"价格修复完成，共修复 {repair_count} 处数据")
