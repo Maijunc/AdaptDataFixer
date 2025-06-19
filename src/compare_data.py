@@ -195,17 +195,10 @@ def compare_files(file1_path, file2_path, output_path=None):
 
         # 保存报告
         if output_path:
-            # 添加时间戳到文件名
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            
-            # 处理文件路径
-            path_obj = Path(output_path)
-            timestamped_path = path_obj.parent / f"{timestamp}_{path_obj.name}"
-            
-            logger.info(f"保存比较报告到 {timestamped_path}")
-            with open(timestamped_path, 'w', encoding='utf-8') as f:
+            logger.info(f"保存比较报告到 {output_path}")
+            with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(comparison_text)
-            logger.info(f"比较报告已保存到: {timestamped_path}")
+            logger.info(f"比较报告已保存到: {output_path}")
 
         logger.info("比较完成")
         return comparison_text
