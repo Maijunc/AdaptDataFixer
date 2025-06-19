@@ -37,10 +37,10 @@ class PriceRepairRule(BaseRepairRule):
         # 1. 基本价格修复（开盘价、收盘价、最高价、最低价）
         logger.debug("正在修复基本价格...")
         price_cols = ['今开', '现价', '最高', '最低']
+        missing_cols = [col for col in price_cols if col not in group.columns]
 
-        # 检查是否有所需的列
-        if not all(col in group.columns for col in price_cols):
-            logger.warning("缺少基本价格列，跳过基本价格修复")
+        if missing_cols:
+            logger.warning(f"缺少基本价格列 {missing_cols}，跳过基本价格修复")
         else:
             # 使用前值填充0值
             for col in price_cols:
@@ -73,7 +73,7 @@ class PriceRepairRule(BaseRepairRule):
 
         # 2. 均价修复
         logger.debug("正在修复均价...")
-        if {'均价', '现价', '今开'}.issubset(group.columns):
+        if '均价' in group.columns and '现价' in group.columns and '今开' in group.columns:
             mask = (group['均价'] == 0)
             if mask.any():
                 # 使用开盘价和收盘价的平均值作为均价
@@ -82,7 +82,7 @@ class PriceRepairRule(BaseRepairRule):
 
         # 3. 昨收价修复
         logger.debug("正在修复昨收价...")
-        if '昨收' in group.columns:
+        if '昨收' in group.columns and '现价' in group.columns and '今开' in group.columns:
             mask = (group['昨收'] == 0)
             if mask.any():
                 # 使用前一天的收盘价作为昨收
@@ -94,7 +94,7 @@ class PriceRepairRule(BaseRepairRule):
 
         # 4. 52周最高价和最低价修复
         logger.debug("正在修复52周最高价和最低价...")
-        if {'52周最高', '52周最低'}.issubset(group.columns):
+        if '52周最高' in group.columns and '52周最低' in group.columns and '最高' in group.columns and '最低' in group.columns:
             # 计算52周（约252个交易日）滚动窗口的最高价和最低价
             rolling_high = group['最高'].rolling(window=252, min_periods=1).max()
             rolling_low = group['最低'].rolling(window=252, min_periods=1).min()
@@ -121,7 +121,7 @@ class PriceRepairRule(BaseRepairRule):
 
         # 5. 涨跌停价修复
         logger.debug("正在修复涨跌停价...")
-        if {'涨停价', '跌停价', '昨收'}.issubset(group.columns):
+        if '涨停价' in group.columns and '跌停价' in group.columns and '昨收' in group.columns:
             # 获取涨跌停比例（默认为10%，ST股票为5%）
             limit_rate = 0.1  # 可以根据实际情况调整
 

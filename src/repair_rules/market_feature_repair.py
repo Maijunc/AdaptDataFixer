@@ -9,7 +9,6 @@ import pandas as pd
 import numpy as np
 from sklearn.experimental import enable_iterative_imputer  # noqa
 from sklearn.impute import IterativeImputer
-from sklearn.experimental import enable_iterative_imputer  # 需要显式启用
 from .base_rule import BaseRepairRule
 
 logger = logging.getLogger(__name__)
@@ -62,8 +61,7 @@ class MarketFeatureRepairRule(BaseRepairRule):
         # 1. 涨跌幅相关指标修复
         logger.info("正在修复涨跌幅相关指标...")
         # 检查涨跌幅列是否存在
-        change_cols = ['涨跌幅', '涨跌', '涨跌幅%', '日涨跌幅']
-        change_col = next((col for col in change_cols if col in group.columns), None)
+        change_col = '涨跌幅' if '涨跌幅' in group.columns else None
 
         if change_col:
             period_cols = {
@@ -89,8 +87,7 @@ class MarketFeatureRepairRule(BaseRepairRule):
         # 2. 年初至今%和一年涨幅%的修复
         logger.info("正在修复年初至今%和一年涨幅%...")
         # 检查涨跌幅列是否存在
-        change_cols = ['涨跌幅', '涨跌', '涨跌幅%', '日涨跌幅']
-        change_col = next((col for col in change_cols if col in group.columns), None)
+        change_col = '涨跌幅' if '涨跌幅' in group.columns else None
 
         if '年初至今%' in group.columns and '日期' in group.columns and change_col:
             try:
@@ -109,13 +106,9 @@ class MarketFeatureRepairRule(BaseRepairRule):
                 logger.warning(f"年初至今%修复失败: {str(e)}")
 
         # 检查52周最高/最低列
-        high_cols = ['52周最高', '52周高', '年最高']
-        low_cols = ['52周最低', '52周低', '年最低']
-        year_change_cols = ['一年涨幅%', '年涨幅%', '52周涨幅%']
-
-        high_col = next((col for col in high_cols if col in group.columns), None)
-        low_col = next((col for col in low_cols if col in group.columns), None)
-        year_change_col = next((col for col in year_change_cols if col in group.columns), None)
+        high_col = '52周最高' if '52周最高' in group.columns else None
+        low_col = '52周最低' if '52周最低' in group.columns else None
+        year_change_col = '一年涨幅%' if '一年涨幅%' in group.columns else None
 
         if high_col and low_col and year_change_col:
             mask = (group[year_change_col] == 0) & (group[high_col] > 0) & (group[low_col] > 0)
@@ -125,8 +118,7 @@ class MarketFeatureRepairRule(BaseRepairRule):
 
         # 3. 强弱度%的修复
         logger.info("正在修复强弱度%...")
-        strength_cols = ['强弱度%', '强弱度', '相对强弱']
-        strength_col = next((col for col in strength_cols if col in group.columns), None)
+        strength_col = '强弱度%' if '强弱度%' in group.columns else None
 
         if strength_col and change_col:
             # 按照公式：(100+上一个交易的强弱度%)/(100+上一个交易的涨跌幅)=(100+强弱度%)/(100+涨跌幅)
@@ -146,17 +138,13 @@ class MarketFeatureRepairRule(BaseRepairRule):
         # 4. 开盘%、最高%、最低%、均涨幅%的修复
         logger.info("正在修复开盘%、最高%、最低%、均涨幅%...")
 
-        # 检查昨收价列
-        prev_close_cols = ['昨收', '昨收价', '前收盘']
-        prev_close_col = next((col for col in prev_close_cols if col in group.columns), None)
+        # 检查昨收列
+        prev_close_col = '昨收' if '昨收' in group.columns else None
 
         if prev_close_col:
             # 开盘%修复
-            open_pct_cols = ['开盘%', '开盘涨幅%']
-            open_cols = ['今开', '开盘价', '开盘']
-
-            open_pct_col = next((col for col in open_pct_cols if col in group.columns), None)
-            open_col = next((col for col in open_cols if col in group.columns), None)
+            open_pct_col = '开盘%' if '开盘%' in group.columns else None
+            open_col = '今开' if '今开' in group.columns else None
 
             if open_pct_col and open_col:
                 mask = (group[open_pct_col] == 0) & (group[prev_close_col] > 0)
@@ -166,11 +154,8 @@ class MarketFeatureRepairRule(BaseRepairRule):
                     repair_count += mask.sum()
 
             # 最高%修复
-            high_pct_cols = ['最高%', '最高涨幅%']
-            high_cols = ['最高', '最高价', '高']
-
-            high_pct_col = next((col for col in high_pct_cols if col in group.columns), None)
-            high_col = next((col for col in high_cols if col in group.columns), None)
+            high_pct_col = '最高%' if '最高%' in group.columns else None
+            high_col = '最高' if '最高' in group.columns else None
 
             if high_pct_col and high_col:
                 mask = (group[high_pct_col] == 0) & (group[prev_close_col] > 0)
@@ -180,11 +165,8 @@ class MarketFeatureRepairRule(BaseRepairRule):
                     repair_count += mask.sum()
 
             # 最低%修复
-            low_pct_cols = ['最低%', '最低涨幅%']
-            low_cols = ['最低', '最低价', '低']
-
-            low_pct_col = next((col for col in low_pct_cols if col in group.columns), None)
-            low_col = next((col for col in low_cols if col in group.columns), None)
+            low_pct_col = '最低%' if '最低%' in group.columns else None
+            low_col = '最低' if '最低' in group.columns else None
 
             if low_pct_col and low_col:
                 mask = (group[low_pct_col] == 0) & (group[prev_close_col] > 0)
