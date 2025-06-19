@@ -5,21 +5,22 @@ import seaborn as sns
 from pathlib import Path
 import matplotlib.font_manager as fm
 import logging
+from datetime import datetime
 
 # 获取模块级别的logger
 logger = logging.getLogger(__name__)
 
-def init_logging(log_file='compare_data.log'):
-    """初始化日志配置"""
-    # 创建一个文件处理器
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
-    file_handler.setLevel(logging.INFO)
+def init_logging():
+    """初始化日志配置，只输出到控制台"""
+    # 创建一个控制台处理器
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
     
     # 设置日志格式
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
     
-    # 获取根日志记录器并添加文件处理器
+    # 获取根日志记录器并添加控制台处理器
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
     
@@ -27,8 +28,8 @@ def init_logging(log_file='compare_data.log'):
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
     
-    # 添加文件处理器
-    root_logger.addHandler(file_handler)
+    # 添加控制台处理器
+    root_logger.addHandler(console_handler)
 
 def setup_chinese_font():
     """设置中文字体"""
@@ -104,6 +105,12 @@ def compare_dataframes(df1, df2, name1="未修复数据", name2="已修复数据
     null_cells2 = df2.isnull().sum().sum()
     zero_cells1 = (df1 == 0).sum().sum()
     zero_cells2 = (df2 == 0).sum().sum()
+    
+    # 记录空值数量对比到日志
+    logger.info(f"空值数量对比: {name1}={null_cells1} vs {name2}={null_cells2}")
+    if null_cells1 > 0:
+        repair_rate = ((null_cells1 - null_cells2) / null_cells1 * 100) if null_cells1 > null_cells2 else 0
+        logger.info(f"空值修复率: {repair_rate:.2f}%")
 
     comparison_results.append(f"\n=== 基础统计信息 ===")
     comparison_results.append(f"{name1}:")
@@ -142,11 +149,8 @@ def compare_dataframes(df1, df2, name1="未修复数据", name2="已修复数据
     return "\n".join(comparison_results)
 
 def visualize_comparison(df1, df2, name1="未修复数据", name2="已修复数据"):
-    """创建数据比较的可视化图表"""
+    """计算数据比较的统计信息"""
     try:
-        # 确保字体设置正确
-        logger.info("开始创建可视化图表...")
-        
         # 1. 计算每列的空值比例
         null_ratio1 = (df1.isnull().sum() / len(df1)) * 100
         null_ratio2 = (df2.isnull().sum() / len(df2)) * 100
@@ -155,62 +159,17 @@ def visualize_comparison(df1, df2, name1="未修复数据", name2="已修复数�
         zero_ratio1 = (df1 == 0).sum() / len(df1) * 100
         zero_ratio2 = (df2 == 0).sum() / len(df2) * 100
 
-        # 创建图表，设置DPI以提高清晰度
-        plt.figure(figsize=(15, 10), dpi=300)
-        
-        # 设置全局字体大小
-        plt.rcParams['font.size'] = 12
-
-        # 空值比例对比图
-        plt.subplot(2, 1, 1)
-        columns_with_nulls = null_ratio1[null_ratio1 > 0].index.union(null_ratio2[null_ratio2 > 0].index)
-        if len(columns_with_nulls) > 0:
-            data = pd.DataFrame({
-                name1: null_ratio1[columns_with_nulls],
-                name2: null_ratio2[columns_with_nulls]
-            })
-            data.plot(kind='bar', ax=plt.gca())
-            plt.title('各列空值比例对比')
-            plt.xticks(rotation=45, ha='right')
-            plt.ylabel('空值比例 (%)')
-            plt.legend()
-
-        # 零值比例对比图
-        plt.subplot(2, 1, 2)
-        columns_with_zeros = zero_ratio1[zero_ratio1 > 0].index.union(zero_ratio2[zero_ratio2 > 0].index)
-        if len(columns_with_zeros) > 0:
-            data = pd.DataFrame({
-                name1: zero_ratio1[columns_with_zeros],
-                name2: zero_ratio2[columns_with_zeros]
-            })
-            data.plot(kind='bar', ax=plt.gca())
-            plt.title('各列零值比例对比')
-            plt.xticks(rotation=45, ha='right')
-            plt.ylabel('零值比例 (%)')
-            plt.legend()
-
-        plt.tight_layout()
-        
-        # 保存图表，使用高质量设置
-        output_file = 'data_comparison-2.png'
-        logger.info(f"保存图表到 {output_file}")
-        plt.savefig(output_file, dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        logger.info("图表创建完成")
-        
+        # 记录统计信息到日志
+        logger.info("数据比较统计信息:")
+        for column in df1.columns:
+            if column in df2.columns:
+                if null_ratio1[column] > 0 or null_ratio2[column] > 0:
+                    logger.info(f"列 {column} 的空值比例: {name1}={null_ratio1[column]:.2f}%, {name2}={null_ratio2[column]:.2f}%")
+                if zero_ratio1[column] > 0 or zero_ratio2[column] > 0:
+                    logger.info(f"列 {column} 的零值比例: {name1}={zero_ratio1[column]:.2f}%, {name2}={zero_ratio2[column]:.2f}%")
+                    
     except Exception as e:
-        logger.error(f"创建可视化图表时出错: {e}")
-        # 尝试使用最基本的设置重新创建图表
-        try:
-            plt.figure(figsize=(15, 10))
-            plt.text(0.5, 0.5, f"图表创建失败: {str(e)}", 
-                    horizontalalignment='center', verticalalignment='center')
-            plt.savefig('data_comparison-error.png')
-            plt.close()
-            logger.info("已创建错误信息图表")
-        except:
-            logger.error("无法创建错误信息图表")
+        logger.error(f"计算统计信息时出错: {e}")
 
 def compare_files(file1_path, file2_path, output_path=None):
     """比较两个CSV文件的差异并生成报告"""
@@ -230,16 +189,23 @@ def compare_files(file1_path, file2_path, output_path=None):
         logger.info("生成比较报告文本")
         comparison_text = compare_dataframes(df1, df2)
 
-        # 创建可视化图表
-        logger.info("创建可视化图表")
+        # 计算统计信息
+        logger.info("计算统计信息")
         visualize_comparison(df1, df2)
 
         # 保存报告
         if output_path:
-            logger.info(f"保存比较报告到 {output_path}")
-            with open(output_path, 'w', encoding='utf-8') as f:
+            # 添加时间戳到文件名
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # 处理文件路径
+            path_obj = Path(output_path)
+            timestamped_path = path_obj.parent / f"{timestamp}_{path_obj.name}"
+            
+            logger.info(f"保存比较报告到 {timestamped_path}")
+            with open(timestamped_path, 'w', encoding='utf-8') as f:
                 f.write(comparison_text)
-            logger.info(f"比较报告已保存到: {output_path}")
+            logger.info(f"比较报告已保存到: {timestamped_path}")
 
         logger.info("比较完成")
         return comparison_text
@@ -249,24 +215,25 @@ def compare_files(file1_path, file2_path, output_path=None):
         return f"比较过程中出错: {str(e)}"
 
 if __name__ == "__main__":
+    # 获取当前时间戳
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
     # 文件路径
     file1_path = "通达信数据.csv"
     file2_path = "repaired_通达信数据.csv"
-    output_path = "comparison_report.txt"
-    log_path = "data_comparison.log"
+    output_path = f"{timestamp}_comparison_report.txt"
 
-    # 初始化日志和matplotlib配置
-    init_logging(log_path)
+    # 初始化日志（输出到控制台）和matplotlib配置
+    init_logging()
     setup_matplotlib()
 
     # 执行比较
     result = compare_files(file1_path, file2_path, output_path)
     
-    # 只打印比较结果，不打印日志
+    # 打印比较结果
     if not result.startswith("比较过程中出错"):
         print("\n=== 数据比较结果 ===")
         print(result)
     else:
         print("\n=== 错误信息 ===")
         print(result)
-        print(f"详细日志请查看: {log_path}")
