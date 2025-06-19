@@ -130,7 +130,8 @@ class TradingRepairRule(BaseRepairRule):
                             avg_ref = reference_values[non_zero_ref].mean()
                             
                             for col in available_order_cols:
-                                group.loc[zero_total & non_zero_ref, col] = reference_values[non_zero_ref] * avg_ratios[col]
+                                group.loc[zero_total & non_zero_ref, col] = (reference_values[non_zero_ref] *
+                                                                             avg_ratios[col]).__round__(2)
                                 repair_count += (zero_total & non_zero_ref).sum()
 
         # 5. 主力资金流向数据修复
@@ -152,14 +153,16 @@ class TradingRepairRule(BaseRepairRule):
             if '主力净比%' in available_flow_cols and '主力净额' in available_flow_cols and '总金额' in group.columns:
                 mask = (group['主力净比%'] == 0) & (group['主力净额'] != 0) & (group['总金额'] > 0)
                 if mask.any():
-                    group.loc[mask, '主力净比%'] = group.loc[mask, '主力净额'] / group.loc[mask, '总金额'] * 100
+                    group.loc[mask, '主力净比%'] = (group.loc[mask, '主力净额'] / group.loc[mask, '总金额'] * 100) \
+                    .__round__(2)
                     repair_count += mask.sum()
             
             # 修复主力占比%
             if '主力占比%' in available_flow_cols and '主力净流入' in available_flow_cols and '总金额' in group.columns:
                 mask = (group['主力占比%'] == 0) & (group['主力净流入'] != 0) & (group['总金额'] > 0)
                 if mask.any():
-                    group.loc[mask, '主力占比%'] = abs(group.loc[mask, '主力净流入']) / group.loc[mask, '总金额'] * 100
+                    group.loc[mask, '主力占比%'] = (abs(group.loc[mask, '主力净流入']) / group.loc[mask, '总金额'] * 100)\
+                    .__round__(2)
                     repair_count += mask.sum()
 
         # 6. 委托笔数修复
