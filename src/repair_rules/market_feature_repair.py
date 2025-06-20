@@ -58,6 +58,162 @@ class MarketFeatureRepairRule(BaseRepairRule):
                 group.loc[mask3, '涨跌幅'] = (calculated_pct[mask3]).__round__(2)
                 repair_count += mask3.sum()
 
+        if '涨跌' in group.columns:
+            mask = (group['涨跌'] == 0)
+            if mask.any():
+                if '现价' in group.columns and '昨收' in group.columns:
+                    group.loc[mask, '涨跌'] = group.loc[mask, '现价'] - group.loc[mask, '昨收']
+                    repair_count += mask.sum()
+
+        if '振幅%' in group.columns:
+            mask = (group['振幅%'] == 0)
+            if mask.any():
+                group.loc[mask, '振幅%'] = abs(group.loc[mask, '最高'] - group.loc[mask, '最低'])
+                repair_count += mask.sum()
+
+        if '内盘' in group.columns:
+            # 检查是否存在总量和内盘列（用于准确计算）
+            if '总量' in group.columns and '外盘' in group.columns:
+                # 先尝试用总量-内盘计算外盘（准确方法）
+                valid_mask = (group['总量'] != 0) & (group['外盘'] != 0)
+                if valid_mask.any():
+                    group.loc[valid_mask, '内盘'] = group.loc[valid_mask, '总量'] - group.loc[valid_mask, '外盘']
+                    repair_count += valid_mask.sum()
+
+            # 无准确方法时的替补策略（总量或内盘数据无效）
+            invalid_mask = (group['内盘'] == 0) | (~(group['总量'] != 0) | ~(group['外盘'] != 0))
+            if invalid_mask.any():
+                # 计算上一交易日和下一交易日的均值
+                group.loc[invalid_mask, '内盘'] = (group['内盘'].shift() + group['内盘'].shift(-1)) / 2
+                # 处理不存在下一交易日的情况（用前一交易日的值覆盖）
+                group.loc[invalid_mask & (group['内盘'].isna()), '内盘'] = group['内盘'].shift()
+                # 处理所有数据都缺失的情况（向前填充）
+                group['内盘'] = group['内盘'].ffill()
+                repair_count += invalid_mask.sum()
+
+        if '外盘' in group.columns:
+            # 检查是否存在总量和内盘列（用于准确计算）
+            if '总量' in group.columns and '内盘' in group.columns:
+                # 先尝试用总量-内盘计算外盘（准确方法）
+                valid_mask = (group['总量'] != 0) & (group['内盘'] != 0)
+                if valid_mask.any():
+                    group.loc[valid_mask, '外盘'] = group.loc[valid_mask, '总量'] - group.loc[valid_mask, '内盘']
+                    repair_count += valid_mask.sum()
+
+            # 无准确方法时的替补策略（总量或内盘数据无效）
+            invalid_mask = (group['外盘'] == 0) | (~(group['总量'] != 0) | ~(group['内盘'] != 0))
+            if invalid_mask.any():
+                # 计算上一交易日和下一交易日的均值
+                group.loc[invalid_mask, '外盘'] = (group['外盘'].shift() + group['外盘'].shift(-1)) / 2
+                # 处理不存在下一交易日的情况（用前一交易日的值覆盖）
+                group.loc[invalid_mask & (group['外盘'].isna()), '外盘'] = group['外盘'].shift()
+                # 处理所有数据都缺失的情况（向前填充）
+                group['外盘'] = group['外盘'].ffill()
+                repair_count += invalid_mask.sum()
+
+        if '内外比' in group.columns:
+            # 检查是否存在内盘和外盘列（用于准确计算）
+            if '内盘' in group.columns and '外盘' in group.columns:
+                # 先尝试用内盘/外盘计算内外比（准确方法）
+                mask = (group['内盘'] != 0) & (group['外盘'] != 0) & (group['外盘'] != 0)
+                if mask.any():
+                    group.loc[mask, '内外比'] = group.loc[mask, '内盘'] / group.loc[mask, '外盘']
+                    repair_count += mask.sum()
+
+            # 无准确方法时的替补策略（内盘/外盘数据无效或计算结果异常）
+            invalid_mask = (group['内外比'] == 0) | ~mask | (group['内外比'] < 0)
+            if invalid_mask.any():
+                # 方法1：用前后交易日的均值填充
+                group.loc[invalid_mask, '内外比'] = (group['内外比'].shift() + group['内外比'].shift(-1)) / 2
+                # 方法2：处理不存在下一交易日的情况（用前一交易日的值）
+                group.loc[invalid_mask & (group['内外比'].isna()), '内外比'] = group['内外比'].shift()
+                # 方法3：处理极端异常值（如负数，设为1.0作为中性值）
+                group.loc[group['内外比'] < 0, '内外比'] = 1.0
+                # 最终向前填充处理全量缺失
+                group['内外比'] = group['内外比'].ffill()
+                repair_count += invalid_mask.sum()
+
+        if '买量' in group.columns:
+            # 买量修复：若为0则设为收盘价（根据文档规则，可能存在业务逻辑简化）
+            mask = (group['买量'] == 0)
+            if mask.any():
+                group.loc[mask, '买量'] = group.loc[mask, '收盘价']  # 注：实际业务中可能需用委托数据，此处按文档规则处理
+                repair_count += mask.sum()
+
+        if '卖量' in group.columns:
+            # 卖量修复：若为0则设为收盘价（根据文档规则）
+            mask = (group['卖量'] == 0)
+            if mask.any():
+                group.loc[mask, '卖量'] = group.loc[mask, '收盘价']  # 注：同上
+                repair_count += mask.sum()
+
+            # 进阶替补策略：若收盘价也为0，用前后交易日的买量/卖量均值填充
+            if '买量' in group.columns and '卖量' in group.columns:
+                invalid_buy = (group['买量'] == 0) & (group['收盘价'] == 0)
+                invalid_sell = (group['卖量'] == 0) & (group['收盘价'] == 0)
+
+                if invalid_buy.any():
+                    group.loc[invalid_buy, '买量'] = (group['买量'].shift() + group['买量'].shift(-1)) / 2
+                    group.loc[invalid_buy & group['买量'].isna(), '买量'] = group['买量'].shift()
+                    repair_count += invalid_buy.sum()
+
+                if invalid_sell.any():
+                    group.loc[invalid_sell, '卖量'] = (group['卖量'].shift() + group['卖量'].shift(-1)) / 2
+                    group.loc[invalid_sell & group['卖量'].isna(), '卖量'] = group['卖量'].shift()
+                    repair_count += invalid_sell.sum()
+
+
+        if '委比%' in group.columns:
+            # 检查买量和卖量是否存在
+            if '买量' in group.columns and '卖量' in group.columns:
+                valid_mask = (group['买量'] != 0) & (group['卖量'] != 0)
+                if valid_mask.any():
+                    # 计算委比，处理分母为0的情况
+                    group.loc[valid_mask, '委比%'] = ((group.loc[valid_mask, '买量'] - group.loc[valid_mask, '卖量']) /
+                                                      (group.loc[valid_mask, '买量'] + group.loc[
+                                                          valid_mask, '卖量'])) * 100
+                    # 避免除零错误，当买量+卖量=0时设为0
+                    zero_denominator = (group['买量'] + group['卖量'] == 0)
+                    group.loc[zero_denominator, '委比%'] = 0
+                    repair_count += valid_mask.sum()
+
+            # 替补策略：买量/卖量无效时用历史数据填充
+            invalid_mask = (group['委比%'] == 0) | ~valid_mask
+            if invalid_mask.any():
+                group.loc[invalid_mask, '委比%'] = (group['委比%'].shift() + group['委比%'].shift(-1)) / 2
+                group.loc[invalid_mask & group['委比%'].isna(), '委比%'] = group['委比%'].shift()
+                group['委比%'] = group['委比%'].ffill()
+                repair_count += invalid_mask.sum()
+
+        if '量涨速%' in group.columns:
+            invalid_mask = (group['量涨速%'] == 0) | (group['量涨速%'].isna()) | (group['量涨速%'] > 1000)  # 过滤异常大值
+            if invalid_mask.any():
+                group.loc[invalid_mask, '量涨速%'] = group['量涨速%'].ffill()
+                group.loc[invalid_mask & group['量涨速%'].isna(), '量涨速%'] = group['量涨速%'].ffill()
+                repair_count += invalid_mask.sum()
+
+        if '活跃度' in group.columns:
+            # 检查相关列是否存在
+            required_cols = ['换手%', '量比', '振幅%']
+            if all(col in group.columns for col in required_cols):
+                valid_mask = (group['换手%'] != 0) & (group['量比'] != 0) & (group['振幅%'] != 0)
+                if valid_mask.any():
+                    group.loc[valid_mask, '活跃度'] = (group.loc[valid_mask, '换手%'] +
+                                                       group.loc[valid_mask, '量比'] +
+                                                       group.loc[valid_mask, '振幅%'])
+                    repair_count += valid_mask.sum()
+
+            # 替补策略：相关列无效时用历史活跃度填充
+            invalid_mask = (group['活跃度'] == 0) | ~valid_mask
+            if invalid_mask.any():
+                group.loc[invalid_mask, '活跃度'] = group['活跃度'].ffill()
+                group.loc[invalid_mask & group['活跃度'].isna(), '活跃度'] = group['活跃度'].fillna(
+                    (group['活跃度'].shift() + group['活跃度'].shift(-1)) / 2
+                )
+                repair_count += invalid_mask.sum()
+
+
+
         # 1. 涨跌幅相关指标修复
         logger.info("正在修复涨跌幅相关指标...")
         # 检查涨跌幅列是否存在

@@ -34,6 +34,42 @@ class PriceRepairRule(BaseRepairRule):
         """
         repair_count = 0
 
+        if '现价' in group.columns and '收盘价' in group.columns:
+            # 1. 处理现价=0且收盘价≠0的情况（用收盘价覆盖现价）
+            mask1 = (group['现价'] == 0) & (group['收盘价'] != 0)
+            group.loc[mask1, '现价'] = group.loc[mask1, '收盘价']
+            repair_count += mask1.sum()
+
+            # 2. 处理收盘价=0且现价≠0的情况（用现价覆盖收盘价）
+            mask2 = (group['收盘价'] == 0) & (group['现价'] != 0)
+            group.loc[mask2, '收盘价'] = group.loc[mask2, '现价']
+            repair_count += mask2.sum()
+
+            # 3. 处理现价≠收盘价的情况（根据其他列重新计算）
+            if '开盘价' in group.columns and '最高价' in group.columns and '最低价' in group.columns:
+                # 计算现价：开盘价 * (1 + 涨跌幅/100)
+                calculated_price = group['开盘价'] * (1 + group['涨跌幅'] / 100)
+
+                # 找出现价与收盘价不匹配的行
+                mask3 = (group['现价'] != group['收盘价'])
+                # 覆盖现价和收盘价
+                group.loc[mask3, '现价'] = calculated_price[mask3]
+                group.loc[mask3, '收盘价'] = calculated_price[mask3]
+                repair_count += mask3.sum()
+
+        if '卖价' in group.columns:
+            mask = (group['卖价'] == 0)
+            if mask.any():
+                if '收盘价' in group.columns:
+                    group.loc[mask, '卖价'] = group.loc[mask, '收盘价']
+                    repair_count += mask.sum()
+        if '买价' in group.columns:
+            mask = (group['买价'] == 0)
+            if mask.any():
+                if '收盘价' in group.columns:
+                    group.loc[mask, '买价'] = group.loc[mask, '收盘价']
+                    repair_count += mask.sum()
+
         # 1. 基本价格修复（开盘价、收盘价、最高价、最低价）
         logger.debug("正在修复基本价格...")
         price_cols = ['今开', '现价', '最高', '最低']
@@ -80,9 +116,28 @@ class PriceRepairRule(BaseRepairRule):
                 group.loc[mask, '均价'] = ((group.loc[mask, '今开'] + group.loc[mask, '现价']) / 2).__round__(2)
                 repair_count += mask.sum()
 
+        logger.debug("正在修复今开...")
+        if '今开' in group.columns:
+            mask = (group['今开'] == 0)
+            if mask.any():
+                if '昨收' in group.columns and '涨跌幅' in group.columns:
+                    # 使用昨收价和涨跌幅计算开盘价
+                    group.loc[mask, '今开'] = group.loc[mask, '昨收'] * (1 + group.loc[mask, '涨跌幅'] / 100)
+                    repair_count += mask.sum()
+            mask = (group['今开'] == 0)
+            if mask.any():
+                group.loc[mask, '今开'] = group.loc[mask, '昨收']
+                repair_count += mask.sum()
+
         # 3. 昨收价修复
         logger.debug("正在修复昨收价...")
         if '昨收' in group.columns and '现价' in group.columns and '今开' in group.columns:
+            mask = (group['昨收'] == 0)
+            if mask.any():
+                if '今开' in group.columns and '涨跌幅' in group.columns:
+                    group.loc[mask, '昨收'] = group['今开'] / (1 + group['涨跌幅'] / 100)
+                    repair_count += mask.sum()
+
             mask = (group['昨收'] == 0)
             if mask.any():
                 # 使用前一天的收盘价作为昨收

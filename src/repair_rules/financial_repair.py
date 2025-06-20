@@ -51,6 +51,7 @@ class FinancialRepairRule(BaseRepairRule):
             mask = (group['流通市值'] == 0) & (group['流通股(亿)'] > 0) & (group['现价'] > 0)
             group.loc[mask, '流通市值'] = (group.loc[mask, '流通股(亿)'] * group.loc[mask, '现价'] * 1e4).__round__(2)
             repair_count += mask.sum()
+            repair_count += mask.sum()
 
             # 反向修复流通股
             mask = (group['流通股(亿)'] == 0) & (group['流通市值'] > 0) & (group['现价'] > 0)
