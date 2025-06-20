@@ -91,49 +91,6 @@ class TradingRepairRule(BaseRepairRule):
                         group[col] = group[col].ffill().bfill()
                         repair_count += mask.sum()
 
-        # 4. 大单、中单、小单数据修复
-        logger.debug("正在修复大单、中单、小单数据...")
-        order_cols = ['当日___超大单', '当日___大单', '当日___中单', '当日___小单']
-        available_order_cols = [col for col in order_cols if col in group.columns]
-        
-        if available_order_cols:
-            # 检查是否有0值需要修复
-            for col in available_order_cols:
-                mask = (group[col] == 0)
-                if mask.any():
-                    # 使用前后值填充
-                    group[col] = group[col].replace(0, np.nan)
-                    group[col] = group[col].ffill().bfill().fillna(0)
-                    repair_count += mask.sum()
-            
-            # 确保各类单子的比例合理
-            total_orders = group[available_order_cols].sum(axis=1)
-            non_zero_total = total_orders > 0
-            
-            if non_zero_total.any():
-                # 计算每种单子的平均占比
-                avg_ratios = group.loc[non_zero_total, available_order_cols].div(total_orders[non_zero_total], axis=0).mean()
-                
-                # 对于总和为0的行，使用平均比例填充
-                zero_total = total_orders == 0
-                if zero_total.any():
-                    # 使用总金额或总量作为参考
-                    reference_cols = ['总金额', '总量']
-                    reference_col = next((col for col in reference_cols if col in group.columns), None)
-                    
-                    if reference_col:
-                        reference_values = group.loc[zero_total, reference_col]
-                        non_zero_ref = reference_values > 0
-                        
-                        if non_zero_ref.any():
-                            # 计算参考值的平均值
-                            avg_ref = reference_values[non_zero_ref].mean()
-                            
-                            for col in available_order_cols:
-                                group.loc[zero_total & non_zero_ref, col] = (reference_values[non_zero_ref] *
-                                                                             avg_ratios[col]).__round__(2)
-                                repair_count += (zero_total & non_zero_ref).sum()
-
         # 5. 主力资金流向数据修复
         logger.debug("正在修复主力资金流向数据...")
         flow_cols = ['主力净额', '主力净比%', '主力占比%', '主力净流入', '主力净流入占比']

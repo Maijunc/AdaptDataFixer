@@ -423,8 +423,8 @@ class MarketFeatureRepairRule(BaseRepairRule):
             except Exception as e:
                 logger.warning(f"距5日线%修复失败: {str(e)}")
 
-        # 7. MICE多元插补修复
-        logger.info("正在进行MICE多元插补修复...")
+        # 7. 改进的时序MICE多元插补修复
+        logger.info("正在进行改进的时序MICE多元插补修复...")
         mice_cols = [
             '开盘抢筹%', '现均差%', '总委比%', '总委量差', '主力净额',
             '主力净比%', '主力占比%', '净买率%', '总卖占比%', '总撤委比%',
@@ -441,62 +441,130 @@ class MarketFeatureRepairRule(BaseRepairRule):
             mask_zero = (data_to_impute == 0)
 
             if mask_zero.any().any():
-                # 检查每列是否有足够的非零值用于插补
-                valid_cols = []
-                for col in cols_to_impute:
-                    non_zero_count = (data_to_impute[col] != 0).sum()
-                    if non_zero_count >= 2:  # 至少需要2个非零值才能进行插补
-                        valid_cols.append(col)
+                try:
+                    # 1. 计算相关性矩阵，用于确定插补顺序
+                    valid_data = data_to_impute.replace(0, np.nan)
+                    corr_matrix = valid_data.corr().fillna(0)
+                    
+                    # 2. 根据相关性确定插补顺序（相关性越强的列优先插补）
+                    col_order = []
+                    remaining_cols = set(cols_to_impute)
+                    while remaining_cols:
+                        if not col_order:
+                            # 选择缺失值最少的列作为起始点
+                            missing_counts = mask_zero.sum()
+                            first_col = missing_counts[missing_counts.index.isin(remaining_cols)].idxmin()
+                            col_order.append(first_col)
+                            remaining_cols.remove(first_col)
+                        else:
+                            # 选择与已选列相关性最强的列
+                            max_corr = -1
+                            next_col = None
+                            for col in remaining_cols:
+                                mean_corr = abs(corr_matrix.loc[col_order, col]).mean()
+                                if mean_corr > max_corr:
+                                    max_corr = mean_corr
+                                    next_col = col
+                            if next_col:
+                                col_order.append(next_col)
+                                remaining_cols.remove(next_col)
+                            else:
+                                # 如果没有找到相关性强的列，添加剩余列
+                                col_order.extend(remaining_cols)
+                                remaining_cols.clear()
 
-                if valid_cols:
-                    try:
-                        # 只使用有效的列进行插补
-                        data_to_impute = data_to_impute[valid_cols]
-                        data_to_impute[data_to_impute == 0] = np.nan
+                    # 3. 逐列进行插补
+                    for col in col_order:
+                        mask = (group[col] == 0)
+                        if not mask.any():
+                            continue
 
-                        # 确保数据类型为float
-                        data_to_impute = data_to_impute.astype(float)
-
-                        # 创建MICE插补器
-                        imputer = IterativeImputer(
-                            max_iter=10,           # 最大迭代次数
-                            random_state=42,       # 随机种子，确保结果可重复
-                            min_value=0,           # 插补值的最小值
-                            verbose=0,             # 不显示迭代过程
-                            n_nearest_features=5   # 用于每个特征的最近邻特征数
+                        # 3.1 使用时序信息
+                        # 计算前后N个时间点的均值（使用指数加权）
+                        n_points = 5  # 使用前后5个时间点
+                        weights = np.exp(-np.arange(n_points))  # 指数衰减权重
+                        weights = weights / weights.sum()
+                        
+                        forward_values = pd.DataFrame({
+                            f'forward_{i}': group[col].shift(i) 
+                            for i in range(1, n_points + 1)
+                        })
+                        backward_values = pd.DataFrame({
+                            f'backward_{i}': group[col].shift(-i) 
+                            for i in range(1, n_points + 1)
+                        })
+                        
+                        # 3.2 使用相关特征信息
+                        # 选择相关性最强的3个特征
+                        corr_cols = corr_matrix[col].abs().sort_values(ascending=False)[1:4].index
+                        related_features = group[corr_cols].copy()
+                        
+                        # 3.3 构建预测模型
+                        X = pd.concat([
+                            forward_values,
+                            backward_values,
+                            related_features
+                        ], axis=1)
+                        
+                        # 对预测变量中的0值进行预处理
+                        X = X.replace(0, np.nan)
+                        
+                        # 3.4 使用多种插补方法并集成结果
+                        # 方法1：时序加权平均
+                        temporal_mean = pd.concat([
+                            forward_values.multiply(weights, axis=1).sum(axis=1),
+                            backward_values.multiply(weights, axis=1).sum(axis=1)
+                        ], axis=1).mean(axis=1)
+                        
+                        # 方法2：相关特征回归
+                        valid_mask = X.notna().all(axis=1) & ~mask
+                        if valid_mask.any():
+                            X_valid = X[valid_mask]
+                            y_valid = group.loc[valid_mask, col]
+                            
+                            # 使用简单线性回归
+                            from sklearn.linear_model import LinearRegression
+                            reg = LinearRegression()
+                            reg.fit(X_valid.fillna(0), y_valid)
+                            feature_pred = reg.predict(X[mask].fillna(0))
+                        else:
+                            feature_pred = np.zeros(mask.sum())
+                        
+                        # 3.5 集成预测结果
+                        temporal_weight = 0.7  # 时序信息权重
+                        feature_weight = 0.3   # 特征信息权重
+                        
+                        final_pred = (
+                            temporal_mean[mask] * temporal_weight +
+                            feature_pred * feature_weight
                         )
+                        
+                        # 3.6 应用业务约束
+                        # 确保预测值在合理范围内
+                        col_min = group[col][group[col] > 0].min()
+                        col_max = group[col].max()
+                        final_pred = np.clip(final_pred, col_min * 0.5, col_max * 1.5)
+                        
+                        # 3.7 更新数据
+                        group.loc[mask, col] = final_pred
+                        repair_count += mask.sum()
+                        
+                        logger.info(f"列 {col} 修复了 {mask.sum()} 个值")
 
-                        # 执行插补
-                        imputed_array = imputer.fit_transform(data_to_impute)
-                        imputed_data = pd.DataFrame(
-                            imputed_array,
-                            columns=data_to_impute.columns,
-                            index=data_to_impute.index
-                        )
-
-                        # 只替换原始为0的值，并确保插补值非负
-                        for col in valid_cols:
-                            mask = (group[col] == 0)
-                            if mask.any():
-                                imputed_values = imputed_data[col]
-                                # 确保插补值非负
-                                imputed_values = np.maximum(imputed_values, 0)
-                                group.loc[mask, col] = imputed_values[mask]
-                                repair_count += mask.sum()
-
-                    except Exception as e:
-                        logger.warning(f"MICE插补失败: {str(e)}")
-                        # 使用前后均值作为备选方案，并确保非负
-                        for col in valid_cols:
-                            mask = (group[col] == 0)
-                            if mask.any():
-                                prev_val = group[col].shift(1).fillna(method='ffill')
-                                next_val = group[col].shift(-1).fillna(method='bfill')
-                                avg_val = (prev_val + next_val) / 2
-                                # 确保插补值非负
-                                avg_val = np.maximum(avg_val, 0)
-                                group.loc[mask, col] = avg_val[mask]
-                                repair_count += mask.sum()
+                except Exception as e:
+                    logger.warning(f"改进的时序MICE插补失败: {str(e)}")
+                    # 使用简单的时序填充作为备选方案
+                    for col in cols_to_impute:
+                        mask = (group[col] == 0)
+                        if mask.any():
+                            # 使用前后值的加权平均
+                            prev_val = group[col].shift(1).fillna(method='ffill')
+                            next_val = group[col].shift(-1).fillna(method='bfill')
+                            avg_val = prev_val * 0.6 + next_val * 0.4
+                            # 确保非负
+                            avg_val = np.maximum(avg_val, 0)
+                            group.loc[mask, col] = avg_val[mask]
+                            repair_count += mask.sum()
 
         logger.info(f"市场特征修复完成，共修复 {repair_count} 处数据")
         return group, repair_count
