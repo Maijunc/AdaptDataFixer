@@ -43,29 +43,37 @@ class RepairManager:
 
     def _prepare_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        准备数据，包括数据筛选和基本预处理
+        准备数据，根据fix_all参数筛选数据范围
 
         Args:
-            df (pd.DataFrame): 原始数据框
+            df: 原始数据框
 
         Returns:
-            pd.DataFrame: 预处理后的数据框
-        """
-        # 如果不是全量修复，只保留最近10天的数据
-        if not self.fix_all:
-            recent_dates = df['日期'].unique()
-            recent_dates.sort()
-            recent_dates = recent_dates[-10:] if len(recent_dates) >= 10 else recent_dates
-            df = df[df['日期'].isin(recent_dates)]
-            logger.info(f"增量修复模式，保留最近 {len(recent_dates)} 天数据")
+            筛选后的数据框
 
-        # 记录原始零值数量
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        for col in numeric_cols:
-            self.stats['column_repair_rates'][col] = {
-                'original_zeros': (df[col] == 0).sum(),
-                'repaired': 0
-            }
+        Raises:
+            ValueError: 如果日期列不存在或格式错误
+        """
+        # 1. 日期列校验和转换
+        if '日期' not in df.columns:
+            raise ValueError("数据框中缺少必要的'日期'列")
+
+        df['日期'] = pd.to_datetime(df['日期'])
+
+        # 2. 根据fix_all参数筛选数据
+        if not self.fix_all:
+            # 获取最后10天的日期（确保有足够历史数据）
+            last_date = df['日期'].max()
+            date_range = pd.date_range(end=last_date, periods=10, freq='D')
+
+            # 筛选数据（包含最后10个交易日）
+            df = df[df['日期'].isin(date_range)]
+            logger.info(f"增量修复模式，保留最近 {len(date_range)} 天数据（{date_range[0]} 至 {date_range[-1]}）")
+        else:
+            logger.info("全量修复模式，处理完整数据集")
+
+        # 3. 按股票代码和日期排序
+        df = df.sort_values(['代码', '日期']).reset_index(drop=True)
 
         return df
 

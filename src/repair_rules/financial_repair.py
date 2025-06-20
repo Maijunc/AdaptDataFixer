@@ -186,25 +186,23 @@ class FinancialRepairRule(BaseRepairRule):
             group = group.drop(columns=['5日均价'], errors='ignore')
             repair_count += mask.sum()
 
-        # 8. 昨涨幅%等指标的前向搜索修复 - 使用向量化操作替代循环
-        logger.info("正在修复昨涨幅%、流通比例Z%等指标...")
+            # 8. 昨涨幅%等指标的前向搜索修复 - 使用向量化操作替代循环
+            logger.info("正在修复昨涨幅%、流通比例Z%等指标...")
 
-        search_cols = [
-            '昨涨幅%', '流通比例Z%', '行业PE', 'ABH总市值', 'AB股总市值',
-            '发行价', '安全分', '52周最高', '52周最低', '年振幅%'
-        ]
+            search_cols = [
+                '昨涨幅%', '流通比例Z%', '行业PE', 'ABH总市值', 'AB股总市值',
+                '发行价', '安全分', '52周最高', '52周最低', '年振幅%'
+            ]
 
-        for col in search_cols:
-            if col in group.columns:
-                # 将0替换为NaN以便于前向填充
-                original_values = group[col].copy()
-                group[col] = group[col].replace(0, np.nan)
+            for col in search_cols:
+                if col in group.columns:
+                    initial_zero_count_for_col = (group[col] == 0).sum()
 
-                # 使用ffill()进行前向填充，然后恢复原始的非零值
-                filled_values = group[col].ffill()
-                group[col] = np.where(original_values != 0, original_values, filled_values)
+                    group[col] = group[col].replace(0, np.nan)
+                    group[col] = group[col].ffill().bfill()
+                    group[col] = group[col].fillna(0)
 
-                repair_count += (group[col] == 0).sum()
+                    repair_count += initial_zero_count_for_col
 
         # 9. 市值增减的修复 - 改进计算逻辑
 
