@@ -162,28 +162,46 @@ class MarketFeatureRepairRule(BaseRepairRule):
                     group.loc[invalid_sell & group['卖量'].isna(), '卖量'] = group['卖量'].shift()
                     repair_count += invalid_sell.sum()
 
-
         if '委比%' in group.columns:
             # 检查买量和卖量是否存在
             if '买量' in group.columns and '卖量' in group.columns:
+                # 1. 基于买量和卖量计算委比
                 valid_mask = (group['买量'] != 0) & (group['卖量'] != 0)
                 if valid_mask.any():
                     # 计算委比，处理分母为0的情况
-                    group.loc[valid_mask, '委比%'] = ((group.loc[valid_mask, '买量'] - group.loc[valid_mask, '卖量']) /
-                                                      (group.loc[valid_mask, '买量'] + group.loc[
-                                                          valid_mask, '卖量'])) * 100
+                    group.loc[valid_mask, '委比%'] = (((group.loc[valid_mask, '买量'] - group.loc[valid_mask, '卖量']) /
+                                                       (group.loc[valid_mask, '买量'] + group.loc[
+                                                           valid_mask, '卖量'])) * 100).__round__(2)
+
                     # 避免除零错误，当买量+卖量=0时设为0
                     zero_denominator = (group['买量'] + group['卖量'] == 0)
                     group.loc[zero_denominator, '委比%'] = 0
                     repair_count += valid_mask.sum()
 
-            # 替补策略：买量/卖量无效时用历史数据填充
+            # 2. 替补策略：买量/卖量无效时用历史数据填充
             invalid_mask = (group['委比%'] == 0) | ~valid_mask
             if invalid_mask.any():
-                group.loc[invalid_mask, '委比%'] = (group['委比%'].shift() + group['委比%'].shift(-1)) / 2
-                group.loc[invalid_mask & group['委比%'].isna(), '委比%'] = group['委比%'].shift()
-                group['委比%'] = group['委比%'].ffill()
+                # 计算前后委比值的平均值（处理首尾行）
+                prev_value = group['委比%'].shift()
+                next_value = group['委比%'].shift(-1)
+                avg_value = ((prev_value + next_value) / 2).__round__(2)
+
+                # 优先使用前后平均值填充
+                group.loc[invalid_mask, '委比%'] = avg_value
+
+                # 处理首尾行（只有前值或后值）
+                group.loc[invalid_mask & group['委比%'].isna(), '委比%'] = prev_value
+
+                # 最后兜底：使用前向填充确保无空值
+                group['委比%'] = group['委比%'].ffill().fillna(0)
                 repair_count += invalid_mask.sum()
+
+            # 3. 确保最终无空值
+            null_mask = group['委比%'].isna()
+            if null_mask.any():
+                group.loc[null_mask, '委比%'] = 0
+                repair_count += null_mask.sum()
+                logger.warning(f"委比数据仍存在{null_mask.sum()}个空值，已强制填充为0")
 
         if '量涨速%' in group.columns:
             invalid_mask = (group['量涨速%'] == 0) | (group['量涨速%'].isna()) | (group['量涨速%'] > 1000)  # 过滤异常大值
@@ -212,7 +230,103 @@ class MarketFeatureRepairRule(BaseRepairRule):
                 )
                 repair_count += invalid_mask.sum()
 
+        if '贝塔系数' in group.columns:
+            # 贝塔系数修复：若为0则采用前后交易日均值填充
+            mask = (group['贝塔系数'] == 0)
+            if mask.any():
+                # 计算前后交易日均值
+                prev_beta = group['贝塔系数'].shift()
+                next_beta = group['贝塔系数'].shift(-1)
+                avg_beta = (prev_beta + next_beta) / 2
 
+                # 优先使用前后均值，若无则用前值填充
+                group.loc[mask, '贝塔系数'] = avg_beta[mask].fillna(0)
+                group.loc[mask & group['贝塔系数'].isna(), '贝塔系数'] = prev_beta[mask & group['贝塔系数'].isna()]\
+                    .fillna(0)
+                repair_count += mask.sum()
+
+        if '逐笔均量' in group.columns and '总量' in group.columns and '总成交笔数' in group.columns:
+            # 逐笔均量修复：基于总量和总成交笔数计算
+            mask = (group['逐笔均量'] == 0)
+            if mask.any():
+                valid_trades = (group['总成交笔数'] > 0) & mask
+                invalid_trades = (group['总成交笔数'] == 0) & mask
+
+                # 有效成交笔数场景：总量/总成交笔数
+                if valid_trades.any():
+                    group.loc[valid_trades, '逐笔均量'] = group.loc[valid_trades, '总量'] / group.loc[
+                        valid_trades, '总成交笔数'].fillna(0)
+
+                # 无效成交笔数场景：使用前后均值填充
+                if invalid_trades.any():
+                    prev_vol = group['逐笔均量'].shift()
+                    next_vol = group['逐笔均量'].shift(-1)
+                    avg_vol = (prev_vol + next_vol) / 2
+                    group.loc[invalid_trades, '逐笔均量'] = avg_vol[invalid_trades]
+
+                    # 【新增】空值处理1：前向填充剩余空值
+                    group['逐笔均量'] = group['逐笔均量'].ffill()
+
+                    # 【新增】空值处理2：兜底填充为0（处理首尾行等极端情况）
+                    group.loc[group['逐笔均量'].isna(), '逐笔均量'] = 0
+
+                # 【新增】全局空值检查与填充
+                final_null_mask = group['逐笔均量'].isna()
+                if final_null_mask.any():
+                    group.loc[final_null_mask, '逐笔均量'] = 0
+                    logger.debug(f"修复后仍发现{final_null_mask.sum()}个空值，已强制填充为0")
+
+                repair_count += mask.sum()
+
+        if '连板天' in group.columns and '封单额' in group.columns and '涨跌幅' in group.columns:
+            # 初始化连板天修复计数器
+            board_days_mask = (group['连板天'] == 0)
+            total_board_days = group['连板天'].copy()
+
+            # 定义涨停幅度区间（考虑A股常见涨停板：5%、10%、20%、30%）
+            limit_ranges = [
+                (4.8, 5.2),  # 5%涨停区间
+                (9.8, 10.2),  # 10%涨停区间
+                (19.8, 20.2),  # 20%涨停区间
+                (29.8, 30.2)  # 30%涨停区间
+            ]
+
+            # 生成涨停条件掩码
+        Limit_up_condition = (group['封单额'] != 0) # 涨停条件
+        for low, high in limit_ranges:
+            Limit_up_condition |= ((group['涨跌幅'] >= low) & (group['涨跌幅'] <= high))
+
+        # 前一交易日连板天数据（处理首日无前置数据的情况）
+        prev_board_days = group['连板天'].shift().fillna(0)
+
+        # 核心逻辑：满足涨停条件则连板天+1，否则重置为0
+        total_board_days = np.where(
+            Limit_up_condition,
+            prev_board_days + 1,
+            0
+        )
+
+        # 仅更新值为0的记录（避免覆盖已有有效数据）
+        group.loc[board_days_mask, '连板天'] = total_board_days[board_days_mask]
+        repair_count += board_days_mask.sum()
+
+        if '昨开盘金额' in group.columns and '开盘金额' in group.columns:
+            # 定位昨开盘金额为0的记录
+            zero_mask = (group['昨开盘金额'] == 0)
+            if zero_mask.any():
+                # 获取前一交易日的开盘金额（处理首日无前置数据的情况）
+                prev_open_amount = group['开盘金额'].shift().fillna(0)
+
+                # 核心修复逻辑：前一交易日开盘金额覆盖当前昨开盘金额
+                group.loc[zero_mask, '昨开盘金额'] = prev_open_amount[zero_mask].fillna(0)
+                repair_count += zero_mask.sum()
+
+                # 补充校验：若前一交易日开盘金额也为0，向前递归查找非0值
+                recursive_mask = (group['昨开盘金额'] == 0) & zero_mask
+                if recursive_mask.any():
+                    # 向前填充非0值（跳过首日）
+                    group.loc[recursive_mask, '昨开盘金额'] = group['开盘金额'].shift().ffill()[recursive_mask].fillna(0)
+                    repair_count += recursive_mask.sum()
 
         # 1. 涨跌幅相关指标修复
         logger.info("正在修复涨跌幅相关指标...")
@@ -272,7 +386,7 @@ class MarketFeatureRepairRule(BaseRepairRule):
                         calculated_col = prev_day_col + current_change
 
                         # 覆盖原值为0的位置
-                        group.loc[mask, '年初至今%'] = (calculated_col.loc[mask]).__round__(2)
+                        group.loc[mask, '年初至今%'] = (calculated_col.loc[mask]).fillna(0).__round__(2)
                         repair_count += mask.sum()
                 group.drop('year', axis=1, inplace=True)
             except Exception as e:
@@ -296,7 +410,7 @@ class MarketFeatureRepairRule(BaseRepairRule):
                 calculated_col = prev_day_col + current_change
 
                 # 覆盖原值为0的位置
-                group.loc[mask, year_change_col] = (calculated_col.loc[mask]).__round__(2)
+                group.loc[mask, year_change_col] = (calculated_col.loc[mask]).fillna(0).__round__(2)
                 repair_count += mask.sum()
 
         # 3. 强弱度%的修复
@@ -315,7 +429,7 @@ class MarketFeatureRepairRule(BaseRepairRule):
                 try:
                     # 计算新的强弱度%
                     calculated_strength = ((100 + prev_strength) / (100 + prev_change)) * (100 + current_change) - 100
-                    group.loc[mask, strength_col] = (calculated_strength[mask]).__round__(2)
+                    group.loc[mask, strength_col] = (calculated_strength[mask]).fillna(0).__round__(2)
                     repair_count += mask.sum()
                     logger.info(f"修复了 {mask.sum()} 处 {strength_col} 的值")
                 except Exception as e:
@@ -547,6 +661,7 @@ class MarketFeatureRepairRule(BaseRepairRule):
                         
                         # 3.7 更新数据
                         group.loc[mask, col] = final_pred
+                        group.loc[mask, col] = group.loc[mask, col].fillna(0)
                         repair_count += mask.sum()
                         
                         logger.info(f"列 {col} 修复了 {mask.sum()} 个值")
@@ -558,8 +673,8 @@ class MarketFeatureRepairRule(BaseRepairRule):
                         mask = (group[col] == 0)
                         if mask.any():
                             # 使用前后值的加权平均
-                            prev_val = group[col].shift(1).fillna(method='ffill')
-                            next_val = group[col].shift(-1).fillna(method='bfill')
+                            prev_val = group[col].shift(1).ffill()
+                            next_val = group[col].shift(-1).bfill()
                             avg_val = prev_val * 0.6 + next_val * 0.4
                             # 确保非负
                             avg_val = np.maximum(avg_val, 0)
