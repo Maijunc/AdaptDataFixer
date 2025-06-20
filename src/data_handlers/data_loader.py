@@ -11,12 +11,13 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-def load_data(file_path: str) -> pd.DataFrame:
+def load_data(file_path: str, nrows: Optional[int] = None) -> pd.DataFrame:
     """
     加载并预处理数据
 
     Args:
         file_path (str): CSV文件路径
+        nrows (Optional[int]): 要读取的行数，None表示读取全部
 
     Returns:
         pd.DataFrame: 预处理后的数据框
