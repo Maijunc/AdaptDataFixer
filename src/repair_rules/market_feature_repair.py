@@ -35,6 +35,20 @@ class MarketFeatureRepairRule(BaseRepairRule):
         """
         repair_count = 0
 
+        trade_features = [
+            '均价', '内盘', '外盘', '内外比',
+            '委比%', '量涨速%', '活跃度', '总撤委比%', '散户单增比',
+            '开盘金额', '2分钟金额'  # 新增
+        ]
+        for col in trade_features:
+            if col in group.columns:
+                # 前值权重60% + 后值权重40%
+                prev_val = group[col].shift(1).fillna(0)
+                next_val = group[col].shift(-1).fillna(0)
+                mask = (group[col] == 0)
+                group.loc[mask, col] = prev_val[mask] * 0.6 + next_val[mask] * 0.4
+                repair_count += mask.sum()
+
         # 0. 涨幅%和涨跌幅的相互修复
         if '涨幅%' in group.columns and '涨跌幅' in group.columns:
             # 1. 处理涨幅%=0且涨跌幅≠0的情况（直接用涨跌幅覆盖涨幅%）
@@ -280,6 +294,50 @@ class MarketFeatureRepairRule(BaseRepairRule):
                 group.loc[mask & group['贝塔系数'].isna(), '贝塔系数'] = prev_beta[mask & group['贝塔系数'].isna()]\
                     .fillna(0)
                 repair_count += mask.sum()
+
+        # 修复3日成交额列
+        if '3日成交额' in group.columns:
+            zero_mask = (group['3日成交额'] == 0)
+            if zero_mask.any():
+                group.loc[zero_mask, '3日成交额'] = (
+                        group['总金额'] +
+                        group['昨成交额'].shift(1).fillna(0) +
+                        group['昨成交额'].shift(2).fillna(0)
+                )
+                repair_count += zero_mask.sum()
+
+        # 修复3日换手Z列
+        if '3日换手Z' in group.columns:
+            zero_mask = (group['3日换手Z'] == 0)
+            if zero_mask.any():
+                group.loc[zero_mask, '3日换手Z'] = (
+                        group['换手%'] +
+                        group['换手%'].shift(1).fillna(0) +
+                        group['换手%'].shift(2).fillna(0)
+                )
+                repair_count += zero_mask.sum()
+
+        # 修复笔均量、笔换手%列
+        for col in ['笔均量', '笔换手%']:
+            if col in group.columns:
+                zero_mask = (group[col] == 0)
+                if zero_mask.any():
+                    mean_value = group[col].mean()
+                    group.loc[zero_mask, col] = mean_value
+                    repair_count += zero_mask.sum()
+
+        # 修复实体涨幅%列
+        if '实体涨幅%' in group.columns:
+            zero_mask = (group['实体涨幅%'] == 0)
+            if zero_mask.any():
+                # 排除开盘价为0的情况，避免除以零错误
+                non_zero_open = (group['开盘金额'] != 0)
+                group.loc[zero_mask & non_zero_open, '实体涨幅%'] = (
+                        (group['开盘金额'] - group['开盘金额']) / group['开盘金额']
+                ).fillna(0)
+                # 对于开盘价为0的情况，将实体涨幅%设置为0
+                group.loc[zero_mask & ~non_zero_open, '实体涨幅%'] = 0
+                repair_count += zero_mask.sum()
 
         if '逐笔均量' in group.columns and '总量' in group.columns and '总成交笔数' in group.columns:
             # 逐笔均量修复：基于总量和总成交笔数计算
