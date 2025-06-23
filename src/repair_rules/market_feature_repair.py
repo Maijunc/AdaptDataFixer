@@ -230,6 +230,42 @@ class MarketFeatureRepairRule(BaseRepairRule):
                 )
                 repair_count += invalid_mask.sum()
 
+            # 开盘昨比%修复
+            if '开盘昨比%' in group.columns and '开盘金额' in group.columns and '昨成交额' in group.columns:
+                mask = (group['开盘昨比%'] == 0) & (group['昨成交额'] > 0)
+                group.loc[mask, '开盘昨比%'] = (group.loc[mask, '开盘金额'] / group.loc[mask, '昨成交额']) * 100
+                repair_count += mask.sum()
+
+            # 开盘换手Z修复
+            if {'开盘换手Z', '开盘金额', '今开', '流通股(亿)'}.issubset(group.columns):
+                mask = (group['开盘换手Z'] == 0) & (group['今开'] > 0) & (group['流通股(亿)'] > 0)
+                group.loc[mask, '开盘换手Z'] = ((group.loc[mask, '开盘金额'] / (
+                        group.loc[mask, '今开'] * group.loc[mask, '流通股(亿)'])) * 100).round(2)
+                repair_count += mask.sum()
+
+            # 连涨天修复
+            if '连涨天' in group.columns and '涨跌幅' in group.columns:
+                group = group.sort_values('日期')
+                prev_change = group['涨跌幅'].shift(1)
+                prev_days = group['连涨天'].shift(1)
+
+                mask = (group['涨跌幅'] > 0) & (prev_change < 0)
+                group.loc[mask, '连涨天'] = 1
+
+                mask = (group['涨跌幅'] > 0) & (prev_change > 0)
+                group.loc[mask, '连涨天'] = prev_days[mask] + 1
+
+                mask = (group['涨跌幅'] < 0) & (prev_change < 0)
+                group.loc[mask, '连涨天'] = prev_days[mask] - 1
+
+                mask = (group['涨跌幅'] < 0) & (prev_change > 0)
+                group.loc[mask, '连涨天'] = -1
+
+                mask = (group['涨跌幅'] == 0)
+                group.loc[mask, '连涨天'] = 0
+
+                repair_count += group['连涨天'].isna().sum()
+
         if '贝塔系数' in group.columns:
             # 贝塔系数修复：若为0则采用前后交易日均值填充
             mask = (group['贝塔系数'] == 0)
@@ -326,6 +362,24 @@ class MarketFeatureRepairRule(BaseRepairRule):
                 if recursive_mask.any():
                     # 向前填充非0值（跳过首日）
                     group.loc[recursive_mask, '昨开盘金额'] = group['开盘金额'].shift().ffill()[recursive_mask].fillna(0)
+                    repair_count += recursive_mask.sum()
+
+            # 定位开盘金额为0的记录（新增）
+            zero_mask = (group['开盘金额'] == 0)
+            if zero_mask.any():
+                # 获取后一交易日的昨开盘金额（处理末日无后置数据的情况）
+                next_prev_open_amount = group['昨开盘金额'].shift(-1).fillna(0)
+
+                # 核心修复逻辑：后一交易日的昨开盘金额覆盖当前开盘金额
+                group.loc[zero_mask, '开盘金额'] = next_prev_open_amount[zero_mask].fillna(0)
+                repair_count += zero_mask.sum()
+
+                # 补充校验：若后一交易日昨开盘金额也为0，向后递归查找非0值
+                recursive_mask = (group['开盘金额'] == 0) & zero_mask
+                if recursive_mask.any():
+                    # 向后填充非0值（跳过末日）
+                    group.loc[recursive_mask, '开盘金额'] = group['昨开盘金额'].shift(-1).bfill()[
+                        recursive_mask].fillna(0)
                     repair_count += recursive_mask.sum()
 
         # 1. 涨跌幅相关指标修复
