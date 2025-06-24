@@ -257,27 +257,6 @@ class MarketFeatureRepairRule(BaseRepairRule):
                         group.loc[mask, '今开'] * group.loc[mask, '流通股(亿)'])) * 100).round(2)
                 repair_count += mask.sum()
 
-            # 连涨天修复
-            if '连涨天' in group.columns and '涨跌幅' in group.columns:
-                group = group.sort_values('日期')
-                prev_change = group['涨跌幅'].shift(1)
-                prev_days = group['连涨天'].shift(1)
-
-                mask = (group['涨跌幅'] > 0) & (prev_change < 0)
-                group.loc[mask, '连涨天'] = 1
-
-                mask = (group['涨跌幅'] > 0) & (prev_change > 0)
-                group.loc[mask, '连涨天'] = prev_days[mask] + 1
-
-                mask = (group['涨跌幅'] < 0) & (prev_change < 0)
-                group.loc[mask, '连涨天'] = prev_days[mask] - 1
-
-                mask = (group['涨跌幅'] < 0) & (prev_change > 0)
-                group.loc[mask, '连涨天'] = -1
-
-                mask = (group['涨跌幅'] == 0)
-                group.loc[mask, '连涨天'] = 0
-
                 repair_count += group['连涨天'].isna().sum()
 
         if '贝塔系数' in group.columns:
